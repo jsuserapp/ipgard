@@ -1,0 +1,14 @@
+server:
+  port: 9300
+  # 反向代理子路径，例如 sul2100.cn/ipgard 则设为 /ipgard
+  base_path: ""
+
+auth:
+  # 首次启动时写入数据库；之后可在设置页修改
+  password: "admin"
+
+database:
+  path: "./data/ipgard.db"
+
+scanner:
+  interval_seconds: 10

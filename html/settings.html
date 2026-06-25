@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>设置 - IP Gard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="./static/css/style.css">
+</head>
+<body>
+  <main class="container">
+    <nav class="app-nav">
+      <p class="brand">IP Gard</p>
+      <div class="links">
+        <a href="./">访问记录</a>
+        <a href="./settings" aria-current="page">设置</a>
+        <button class="secondary outline" id="logout-btn" type="button">退出</button>
+      </div>
+    </nav>
+
+    <section>
+      <h2>监控日志</h2>
+      <p class="muted">添加 Apache / Nginx 等访问日志文件，系统将定期读取并解析访问 IP。</p>
+
+      <div class="actions" style="margin:1rem 0;">
+        <button type="button" id="discover-btn">扫描系统日志</button>
+        <button type="button" id="add-custom-btn" class="secondary outline">手动添加路径</button>
+      </div>
+
+      <article id="discover-panel" class="hidden">
+        <header><strong>发现的日志文件</strong></header>
+        <ul class="log-list" id="discover-list"></ul>
+      </article>
+
+      <article id="custom-panel" class="hidden">
+        <form id="custom-form">
+          <label>日志文件路径<input type="text" id="custom-path" placeholder="/var/log/nginx/access.log" required></label>
+          <label>格式
+            <select id="custom-format">
+              <option value="auto">自动识别</option>
+              <option value="combined">Combined（Apache/Nginx 默认）</option>
+              <option value="common">Common</option>
+            </select>
+          </label>
+          <div class="actions">
+            <button type="submit">添加</button>
+            <button type="button" class="secondary outline" id="custom-cancel">取消</button>
+          </div>
+        </form>
+      </article>
+
+      <h3>已监控</h3>
+      <ul class="log-list" id="monitored-list">
+        <li class="muted">加载中…</li>
+      </ul>
+    </section>
+
+    <section style="margin-top:2rem;">
+      <h2>修改密码</h2>
+      <form id="password-form" style="max-width:420px;">
+        <label>当前密码<input type="password" id="old-password" required autocomplete="current-password"></label>
+        <label>新密码<input type="password" id="new-password" required autocomplete="new-password"></label>
+        <p id="pwd-msg" class="hidden"></p>
+        <button type="submit">保存密码</button>
+      </form>
+    </section>
+  </main>
+  <script src="./static/js/app.js"></script>
+  <script>
+    async function loadMonitored() {
+      const data = await App.api('/api/logs/monitored');
+      const ul = document.getElementById('monitored-list');
+      if (!data.logs.length) {
+        ul.innerHTML = '<li class="muted">尚未添加监控日志</li>';
+        return;
+      }
+      ul.innerHTML = data.logs.map(log => `
+        <li>
+          <div>
+            <div><code>${App.esc(log.path)}</code></div>
+            <small class="muted">${log.enabled ? '监控中' : '已暂停'} · ${App.esc(log.format)}</small>
+          </div>
+          <div class="actions">
+            <button type="button" class="secondary outline" data-toggle="${log.id}">${log.enabled ? '暂停' : '启用'}</button>
+            <button type="button" class="outline" data-delete="${log.id}">删除</button>
+          </div>
+        </li>
+      `).join('');
+
+      ul.querySelectorAll('[data-toggle]').forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.dataset.toggle;
+          const log = data.logs.find(l => l.id == id);
+          await App.api(`/api/logs/monitored/${id}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ enabled: !log.enabled }),
+          });
+          loadMonitored();
+        };
+      });
+      ul.querySelectorAll('[data-delete]').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('确定删除此监控项？')) return;
+          await App.api(`/api/logs/monitored/${btn.dataset.delete}`, { method: 'DELETE' });
+          loadMonitored();
+        };
+      });
+    }
+
+    async function discover() {
+      const panel = document.getElementById('discover-panel');
+      const list = document.getElementById('discover-list');
+      panel.classList.remove('hidden');
+      list.innerHTML = '<li class="muted">扫描中…</li>';
+      const data = await App.api('/api/logs/discover');
+      if (!data.candidates.length) {
+        list.innerHTML = '<li class="muted">未发现常见 Apache/Nginx 日志（可手动添加路径）</li>';
+        return;
+      }
+      list.innerHTML = data.candidates.map(c => `
+        <li>
+          <div>
+            <code>${App.esc(c.path)}</code>
+            <small class="muted">${App.esc(c.source)} · ${(c.size / 1024).toFixed(1)} KB</small>
+          </div>
+          <button type="button" class="secondary" data-add="${App.esc(c.path)}">添加</button>
+        </li>
+      `).join('');
+      list.querySelectorAll('[data-add]').forEach(btn => {
+        btn.onclick = async () => {
+          try {
+            await App.api('/api/logs/monitored', {
+              method: 'POST',
+              body: JSON.stringify({ path: btn.dataset.add, format: 'auto' }),
+            });
+            loadMonitored();
+            btn.textContent = '已添加';
+            btn.disabled = true;
+          } catch (e) {
+            alert(e.message);
+          }
+        };
+      });
+    }
+
+    (async () => {
+      if (!(await App.requireAuth())) return;
+      document.getElementById('logout-btn').onclick = () => App.logout();
+      document.getElementById('discover-btn').onclick = discover;
+      document.getElementById('add-custom-btn').onclick = () => {
+        document.getElementById('custom-panel').classList.remove('hidden');
+      };
+      document.getElementById('custom-cancel').onclick = () => {
+        document.getElementById('custom-panel').classList.add('hidden');
+      };
+      document.getElementById('custom-form').onsubmit = async (e) => {
+        e.preventDefault();
+        try {
+          await App.api('/api/logs/monitored', {
+            method: 'POST',
+            body: JSON.stringify({
+              path: document.getElementById('custom-path').value.trim(),
+              format: document.getElementById('custom-format').value,
+            }),
+          });
+          document.getElementById('custom-panel').classList.add('hidden');
+          document.getElementById('custom-form').reset();
+          loadMonitored();
+        } catch (err) {
+          alert(err.message);
+        }
+      };
+      document.getElementById('password-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const msg = document.getElementById('pwd-msg');
+        try {
+          await App.api('/api/settings/password', {
+            method: 'PUT',
+            body: JSON.stringify({
+              old_password: document.getElementById('old-password').value,
+              new_password: document.getElementById('new-password').value,
+            }),
+          });
+          msg.textContent = '密码已更新';
+          msg.className = '';
+          document.getElementById('password-form').reset();
+        } catch (err) {
+          msg.textContent = err.message;
+          msg.className = 'error-msg';
+        }
+        msg.classList.remove('hidden');
+      };
+      await loadMonitored();
+    })();
+  </script>
+</body>
+</html>

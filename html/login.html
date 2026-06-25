@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>登录 - IP Gard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="./static/css/style.css">
+</head>
+<body>
+  <main class="container login-box">
+    <article>
+      <header>
+        <h1>IP Gard</h1>
+        <p class="muted">访问 IP 监控 · 请输入登录密码</p>
+      </header>
+      <form id="login-form">
+        <label>
+          密码
+          <input type="password" id="password" required autofocus autocomplete="current-password">
+        </label>
+        <p id="error" class="error-msg hidden"></p>
+        <button type="submit">登录</button>
+      </form>
+    </article>
+  </main>
+  <script src="./static/js/app.js"></script>
+  <script>
+    (async () => {
+      try {
+        await App.api('/api/me');
+        location.href = App.base + '/';
+      } catch (_) {}
+    })();
+
+    document.getElementById('login-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const errEl = document.getElementById('error');
+      errEl.classList.add('hidden');
+      const password = document.getElementById('password').value;
+      try {
+        await App.api('/api/login', {
+          method: 'POST',
+          body: JSON.stringify({ password }),
+        });
+        location.href = App.base + '/';
+      } catch (err) {
+        errEl.textContent = err.message || '登录失败';
+        errEl.classList.remove('hidden');
+      }
+    });
+  </script>
+</body>
+</html>

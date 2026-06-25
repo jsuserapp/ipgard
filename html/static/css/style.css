@@ -1,0 +1,99 @@
+:root {
+  --pico-font-size: 15px;
+}
+
+body {
+  min-height: 100vh;
+}
+
+nav.app-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+nav.app-nav .brand {
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+nav.app-nav .links {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat-card {
+  padding: 1rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+}
+
+.stat-card strong {
+  display: block;
+  font-size: 1.6rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table.compact td,
+table.compact th {
+  white-space: nowrap;
+  font-size: 0.9rem;
+}
+
+.path-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.muted {
+  color: var(--pico-muted-color);
+}
+
+.error-msg {
+  color: var(--pico-del-color);
+}
+
+.log-list {
+  list-style: none;
+  padding: 0;
+}
+
+.log-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.login-box {
+  max-width: 360px;
+  margin: 4rem auto;
+}
+
+.hidden {
+  display: none !important;
+}

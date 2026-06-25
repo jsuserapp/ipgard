@@ -1,0 +1,40 @@
+# 构建产物
+/ipgard
+/ipgard.exe
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# 本地配置与运行时数据（含密码、数据库）
+config.yaml
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Go
+/vendor/
+/coverage.out
+/coverage.html
+*.prof
+go.work
+go.work.sum
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*~
+
+# 操作系统
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# 临时 / 测试残留
+cookies.txt
+*.tmp
+*.log.bak

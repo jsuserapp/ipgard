@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IP Gard - 访问记录</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <link rel="stylesheet" href="./static/css/style.css">
+</head>
+<body>
+  <main class="container">
+    <nav class="app-nav">
+      <p class="brand">IP Gard</p>
+      <div class="links">
+        <a href="./" aria-current="page">访问记录</a>
+        <a href="./settings">设置</a>
+        <button class="secondary outline" id="logout-btn" type="button">退出</button>
+      </div>
+    </nav>
+
+    <section class="stats-grid">
+      <article class="stat-card">
+        <span class="muted">总记录数</span>
+        <strong id="stat-total">-</strong>
+      </article>
+      <article class="stat-card">
+        <span class="muted">独立 IP（Top 20）</span>
+        <strong id="stat-ips">-</strong>
+      </article>
+    </section>
+
+    <section>
+      <header style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;">
+        <h2 style="margin:0;">访问记录</h2>
+        <form id="filter-form" class="actions" role="search">
+          <input type="search" id="filter-ip" placeholder="筛选 IP" style="margin:0;width:160px;">
+          <button type="submit" class="secondary">搜索</button>
+          <button type="button" id="refresh-btn" class="outline">刷新</button>
+        </form>
+      </header>
+      <div class="table-wrap">
+        <table class="compact">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>IP</th>
+              <th>方法</th>
+              <th>路径</th>
+              <th>状态</th>
+              <th>大小</th>
+              <th>来源日志</th>
+            </tr>
+          </thead>
+          <tbody id="records-body">
+            <tr><td colspan="7" class="muted">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="actions" style="margin-top:1rem;justify-content:space-between;">
+        <small class="muted" id="page-info"></small>
+        <div class="actions">
+          <button type="button" id="prev-btn" class="secondary outline" disabled>上一页</button>
+          <button type="button" id="next-btn" class="secondary outline" disabled>下一页</button>
+        </div>
+      </div>
+    </section>
+
+    <section style="margin-top:2rem;">
+      <h3>访问 IP 排行</h3>
+      <div class="table-wrap">
+        <table class="compact">
+          <thead><tr><th>IP</th><th>次数</th></tr></thead>
+          <tbody id="top-ips-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script src="./static/js/app.js"></script>
+  <script>
+    let offset = 0;
+    const limit = 50;
+    let total = 0;
+    let filterIP = '';
+
+    async function loadStats() {
+      const data = await App.api('/api/stats');
+      document.getElementById('stat-total').textContent = data.total_records;
+      document.getElementById('stat-ips').textContent = data.top_ips.length;
+      const tbody = document.getElementById('top-ips-body');
+      tbody.innerHTML = data.top_ips.map(r =>
+        `<tr><td>${App.esc(r.ip)}</td><td>${r.count}</td></tr>`
+      ).join('') || '<tr><td colspan="2" class="muted">暂无数据</td></tr>';
+    }
+
+    async function loadRecords() {
+      const q = new URLSearchParams({ limit, offset });
+      if (filterIP) q.set('ip', filterIP);
+      const data = await App.api('/api/records?' + q);
+      total = data.total;
+      const tbody = document.getElementById('records-body');
+      if (!data.records.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="muted">暂无记录，请在设置中添加日志文件</td></tr>';
+      } else {
+        tbody.innerHTML = data.records.map(r => `
+          <tr>
+            <td>${App.fmtTime(r.accessed_at)}</td>
+            <td><strong>${App.esc(r.ip)}</strong></td>
+            <td>${App.esc(r.method)}</td>
+            <td class="path-cell" title="${App.esc(r.path)}">${App.esc(r.path)}</td>
+            <td>${r.status || '-'}</td>
+            <td>${App.fmtBytes(r.bytes)}</td>
+            <td class="path-cell" title="${App.esc(r.log_source)}">${App.esc(r.log_source)}</td>
+          </tr>
+        `).join('');
+      }
+      document.getElementById('page-info').textContent =
+        `共 ${total} 条 · 第 ${Math.floor(offset / limit) + 1} 页`;
+      document.getElementById('prev-btn').disabled = offset <= 0;
+      document.getElementById('next-btn').disabled = offset + limit >= total;
+    }
+
+    async function refresh() {
+      await Promise.all([loadStats(), loadRecords()]);
+    }
+
+    (async () => {
+      if (!(await App.requireAuth())) return;
+      document.getElementById('logout-btn').onclick = () => App.logout();
+      document.getElementById('filter-form').onsubmit = (e) => {
+        e.preventDefault();
+        filterIP = document.getElementById('filter-ip').value.trim();
+        offset = 0;
+        loadRecords();
+      };
+      document.getElementById('refresh-btn').onclick = refresh;
+      document.getElementById('prev-btn').onclick = () => { offset = Math.max(0, offset - limit); loadRecords(); };
+      document.getElementById('next-btn').onclick = () => { offset += limit; loadRecords(); };
+      await refresh();
+      setInterval(refresh, 15000);
+    })();
+  </script>
+</body>
+</html>
