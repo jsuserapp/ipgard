@@ -274,12 +274,8 @@
       }
     }
 
-    async function refresh(label = 'page load') {
-      const t0 = performance.now();
-      console.group(`[ipgard] ${label}`);
+    async function refresh() {
       await Promise.all([loadStats(), loadIPs(true)]);
-      console.log(`parallel total: ${(performance.now() - t0).toFixed(0)}ms`);
-      console.groupEnd();
     }
 
     function schedulePoll() {
@@ -292,9 +288,7 @@
     }
 
     (async () => {
-      const tInit = performance.now();
       if (!(await App.requireAuth())) return;
-      console.log(`[ipgard] auth — ${(performance.now() - tInit).toFixed(0)}ms`);
 
       const prefs = App.loadListPrefs();
       sort = prefs.sort;
@@ -330,7 +324,7 @@
       document.getElementById('filter-sort').onchange = applyFilters;
       document.getElementById('filter-blocked').onchange = applyFilters;
       document.getElementById('filter-ip').oninput = App.debounce(applyFilters, 400);
-      document.getElementById('refresh-btn').onclick = () => refresh('manual refresh');
+      document.getElementById('refresh-btn').onclick = refresh;
       document.getElementById('prev-btn').onclick = () => { offset = Math.max(0, offset - limit); loadIPs(); };
       document.getElementById('next-btn').onclick = () => { offset += limit; loadIPs(); };
       await refresh();

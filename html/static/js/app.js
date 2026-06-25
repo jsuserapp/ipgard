@@ -3,23 +3,12 @@ const App = (() => {
   const STORAGE_KEY = 'ipgard.list_prefs';
 
   async function api(path, options = {}) {
-    const t0 = performance.now();
     const res = await fetch(`${base}${path}`, {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
       ...options,
     });
-    const tFetch = performance.now();
     const data = await res.json().catch(() => ({}));
-    const tDone = performance.now();
-    const method = options.method || 'GET';
-    const serverMs = data._ms;
-    console.log(
-      `[ipgard] ${method} ${path} — ${(tDone - t0).toFixed(0)}ms` +
-      ` (fetch ${(tFetch - t0).toFixed(0)}ms, parse ${(tDone - tFetch).toFixed(0)}ms` +
-      (serverMs ? `, server ${JSON.stringify(serverMs)}` : '') +
-      ')'
-    );
     if (!res.ok) {
       const err = new Error(data.error || res.statusText);
       err.status = res.status;

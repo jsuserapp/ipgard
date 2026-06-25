@@ -1,11 +1,9 @@
 package handler
 
 import (
-	"log"
 	"net/http"
 	"os"
 	"strconv"
-	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -106,7 +104,6 @@ func (h *Handler) me(c *gin.Context) {
 }
 
 func (h *Handler) listIPs(c *gin.Context) {
-	t0 := time.Now()
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	filter := db.IPFilter{
@@ -124,20 +121,12 @@ func (h *Handler) listIPs(c *gin.Context) {
 		filter.Blocked = &v
 	}
 
-	tList := time.Now()
 	ips, total, err := h.store.ListIPStats(filter)
-	listMs := time.Since(tList).Milliseconds()
-	totalMs := time.Since(t0).Milliseconds()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	log.Printf("[perf] GET /api/ips list=%dms total=%dms skip_total=%v rows=%d", listMs, totalMs, filter.SkipTotal, len(ips))
-	c.JSON(http.StatusOK, gin.H{
-		"ips":   ips,
-		"total": total,
-		"_ms":   gin.H{"list": listMs, "total": totalMs},
-	})
+	c.JSON(http.StatusOK, gin.H{"ips": ips, "total": total})
 }
 
 func (h *Handler) getIP(c *gin.Context) {
@@ -151,16 +140,11 @@ func (h *Handler) getIP(c *gin.Context) {
 }
 
 func (h *Handler) stats(c *gin.Context) {
-	t0 := time.Now()
-	tSummary := time.Now()
 	totalIPs, blockedIPs, totalVisits, err := h.store.IPStatsSummary()
-	summaryMs := time.Since(tSummary).Milliseconds()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	totalMs := time.Since(t0).Milliseconds()
-	log.Printf("[perf] GET /api/stats summary=%dms total=%dms ips=%d", summaryMs, totalMs, totalIPs)
 	c.JSON(http.StatusOK, gin.H{
 		"total_ips":      totalIPs,
 		"blocked_ips":    blockedIPs,
@@ -168,7 +152,6 @@ func (h *Handler) stats(c *gin.Context) {
 		"firewall_ready": h.firewall.Available(),
 		"geoip_ready":    h.geo.Available(),
 		"scanner":        h.scannerStatus(),
-		"_ms":            gin.H{"summary": summaryMs, "total": totalMs},
 	})
 }
 
