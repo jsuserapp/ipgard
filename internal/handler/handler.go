@@ -236,18 +236,23 @@ func (h *Handler) unblockIP(c *gin.Context) {
 
 func (h *Handler) listIptablesRules(c *gin.Context) {
 	if !h.firewall.Available() {
-		c.JSON(http.StatusOK, gin.H{"available": false, "ips": []string{}})
+		c.JSON(http.StatusOK, gin.H{"available": false, "rules": []firewall.BlockRule{}})
 		return
 	}
-	ips, err := h.firewall.ListRules()
+	rules, err := h.firewall.ListBlockRules()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if ips == nil {
-		ips = []string{}
+	if rules == nil {
+		rules = []firewall.BlockRule{}
 	}
-	c.JSON(http.StatusOK, gin.H{"available": true, "ips": ips})
+	c.JSON(http.StatusOK, gin.H{
+		"available":      true,
+		"chain":          h.cfg.Firewall.Chain,
+		"rules":          rules,
+		"managed_chain":  h.cfg.Firewall.Chain,
+	})
 }
 
 func (h *Handler) iptablesBlock(c *gin.Context) {
@@ -268,8 +273,14 @@ func (h *Handler) iptablesBlock(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+type iptablesRuleReq struct {
+	IP     string `json:"ip"`
+	Chain  string `json:"chain"`
+	Action string `json:"action"`
+}
+
 func (h *Handler) iptablesUnblock(c *gin.Context) {
-	var req firewallReq
+	var req iptablesRuleReq
 	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "ip required"})
 		return
@@ -278,11 +289,17 @@ func (h *Handler) iptablesUnblock(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "iptables not available"})
 		return
 	}
-	if err := h.firewall.Unblock(req.IP); err != nil {
+	if req.Chain == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "chain required"})
+		return
+	}
+	if err := h.firewall.UnblockRule(req.Chain, req.IP, req.Action); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	h.syncDBBlocked(req.IP, false)
+	if req.Chain == h.cfg.Firewall.Chain {
+		h.syncDBBlocked(req.IP, false)
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

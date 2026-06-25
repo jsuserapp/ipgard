@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"sort"
 	"strings"
 )
+
+const filterTable = "filter"
 
 type ipTables struct {
 	enabled      bool
@@ -37,47 +40,133 @@ func (f *ipTables) Init() error {
 	if !f.Available() {
 		return nil
 	}
-	if err := f.ensureChain("filter", f.chain); err != nil {
+	if err := f.ensureChain(filterTable, f.chain); err != nil {
 		return err
 	}
-	return f.ensureJump("filter", "INPUT", f.chain)
+	return f.ensureJump(filterTable, "INPUT", f.chain)
 }
 
-func (f *ipTables) ListRules() ([]string, error) {
+// ListBlockRules reads all source-based DROP/REJECT rules from the system filter table.
+func (f *ipTables) ListBlockRules() ([]BlockRule, error) {
 	if !f.Available() {
 		return nil, ErrNotSupported
 	}
-	out, err := exec.Command(f.iptablesPath, "-S", f.chain).Output()
+
+	out, err := f.output("-t", filterTable, "-S")
 	if err != nil {
-		return nil, fmt.Errorf("iptables -S %s: %w", f.chain, err)
+		return nil, err
 	}
-	var ips []string
+
 	seen := map[string]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "-A ") {
+	var rules []BlockRule
+	for _, line := range strings.Split(out, "\n") {
+		r, ok := parseBlockRuleLine(line)
+		if !ok {
 			continue
 		}
-		ip := parseDropRuleIP(line)
-		if ip == "" || seen[ip] {
+		key := r.Chain + "\x00" + r.IP + "\x00" + r.Action
+		if seen[key] {
 			continue
 		}
-		seen[ip] = true
-		ips = append(ips, ip)
+		seen[key] = true
+		rules = append(rules, r)
 	}
-	return ips, nil
+
+	if len(rules) == 0 {
+		if out, err := f.output("-t", filterTable, "-L", "-n"); err == nil {
+			rules = parseAllListRules(out)
+		}
+	}
+
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Chain != rules[j].Chain {
+			return rules[i].Chain < rules[j].Chain
+		}
+		if rules[i].IP != rules[j].IP {
+			return rules[i].IP < rules[j].IP
+		}
+		return rules[i].Action < rules[j].Action
+	})
+	return rules, nil
 }
 
-func parseDropRuleIP(line string) string {
+func parseBlockRuleLine(line string) (BlockRule, bool) {
+	line = strings.TrimSpace(line)
 	fields := strings.Fields(line)
+	if len(fields) < 4 || fields[0] != "-A" {
+		return BlockRule{}, false
+	}
+
+	action := ""
+	for i := 0; i < len(fields)-1; i++ {
+		if fields[i] == "-j" {
+			action = strings.ToUpper(fields[i+1])
+			break
+		}
+	}
+	if action != "DROP" && action != "REJECT" {
+		return BlockRule{}, false
+	}
+
 	for i := 0; i < len(fields)-1; i++ {
 		if fields[i] == "-s" {
-			ip := strings.TrimSuffix(fields[i+1], "/32")
-			ip = strings.TrimSuffix(ip, "/128")
-			if net.ParseIP(ip) != nil {
-				return ip
+			if ip := normalizeRuleIP(fields[i+1]); ip != "" {
+				return BlockRule{IP: ip, Chain: fields[1], Action: action}, true
 			}
 		}
+	}
+	return BlockRule{}, false
+}
+
+func parseAllListRules(out string) []BlockRule {
+	var rules []BlockRule
+	seen := map[string]bool{}
+	chain := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Chain ") {
+			chain = strings.Fields(line)[1]
+			continue
+		}
+		if chain == "" || line == "" || strings.HasPrefix(line, "target") || strings.HasPrefix(line, "pkts") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 6 {
+			continue
+		}
+		action := strings.ToUpper(fields[0])
+		if action != "DROP" && action != "REJECT" {
+			continue
+		}
+		src := fields[5]
+		ip := normalizeRuleIP(src)
+		if ip == "" {
+			continue
+		}
+		r := BlockRule{IP: ip, Chain: chain, Action: action}
+		key := r.Chain + "\x00" + r.IP + "\x00" + r.Action
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		rules = append(rules, r)
+	}
+	return rules
+}
+
+func normalizeRuleIP(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0.0.0.0/0" || strings.EqualFold(s, "anywhere") {
+		return ""
+	}
+	if strings.Contains(s, "/") {
+		if ip, _, err := net.ParseCIDR(s); err == nil && ip != nil {
+			return ip.String()
+		}
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String()
 	}
 	return ""
 }
@@ -89,21 +178,30 @@ func (f *ipTables) Block(ip string) error {
 	if err := validateIP(ip); err != nil {
 		return err
 	}
-	if f.hasRule(ip) {
+	if f.hasRuleInChain(f.chain, ip, "DROP") {
 		return nil
 	}
-	return f.run("-A", f.chain, "-s", ip, "-j", "DROP")
+	return f.run("-t", filterTable, "-A", f.chain, "-s", ip, "-j", "DROP")
 }
 
+// Unblock removes the IP only from this app's managed chain.
 func (f *ipTables) Unblock(ip string) error {
+	return f.UnblockRule(f.chain, ip, "DROP")
+}
+
+func (f *ipTables) UnblockRule(chain, ip, action string) error {
 	if !f.Available() {
 		return ErrNotSupported
 	}
 	if err := validateIP(ip); err != nil {
 		return err
 	}
-	for f.hasRule(ip) {
-		if err := f.run("-D", f.chain, "-s", ip, "-j", "DROP"); err != nil {
+	action = strings.ToUpper(strings.TrimSpace(action))
+	if action == "" {
+		action = "DROP"
+	}
+	for f.hasRuleInChain(chain, ip, action) {
+		if err := f.run("-t", filterTable, "-D", chain, "-s", ip, "-j", action); err != nil {
 			return err
 		}
 	}
@@ -134,12 +232,12 @@ func (f *ipTables) ensureChain(table, chain string) error {
 }
 
 func (f *ipTables) ensureJump(table, baseChain, targetChain string) error {
-	out, err := exec.Command(f.iptablesPath, "-t", table, "-S", baseChain).Output()
+	out, err := f.output("-t", table, "-S", baseChain)
 	if err != nil {
 		return err
 	}
- needle := fmt.Sprintf("-j %s", targetChain)
-	for _, line := range strings.Split(string(out), "\n") {
+	needle := "-j " + targetChain
+	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, needle) {
 			return nil
 		}
@@ -147,13 +245,38 @@ func (f *ipTables) ensureJump(table, baseChain, targetChain string) error {
 	return f.run("-t", table, "-I", baseChain, "1", "-j", targetChain)
 }
 
-func (f *ipTables) hasRule(ip string) bool {
-	out, err := exec.Command(f.iptablesPath, "-S", f.chain).Output()
+func (f *ipTables) hasRuleInChain(chain, ip, action string) bool {
+	out, err := f.output("-t", filterTable, "-S", chain)
 	if err != nil {
 		return false
 	}
-	needle := fmt.Sprintf("-s %s -j DROP", ip)
-	return strings.Contains(string(out), needle)
+	action = strings.ToUpper(action)
+	needleIP := "-s " + ip
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "-A "+chain+" ") && line != "-A "+chain {
+			continue
+		}
+		if !strings.Contains(line, needleIP) {
+			continue
+		}
+		if strings.Contains(strings.ToUpper(line), " "+action) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *ipTables) output(args ...string) (string, error) {
+	cmd := exec.Command(f.iptablesPath, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if len(out) > 0 {
+			return "", fmt.Errorf("iptables %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+		return "", fmt.Errorf("iptables %s: %w", strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 func (f *ipTables) run(args ...string) error {

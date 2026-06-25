@@ -108,10 +108,10 @@
           <button aria-label="关闭" rel="prev" id="iptables-close"></button>
           <strong>iptables 封禁规则</strong>
         </header>
-        <p class="muted" id="iptables-hint">读取 IPGARD 链中的 DROP 规则，可添加或移除。</p>
-        <form id="iptables-add-form" class="iptables-add">
-          <input type="text" id="iptables-add-ip" placeholder="输入要封禁的 IP" required>
-          <button type="submit" class="secondary btn-sm">添加</button>
+        <p class="muted" id="iptables-hint">读取系统 filter 表中所有按来源 IP 的 DROP/REJECT 规则。</p>
+        <form id="iptables-add-form" role="group">
+          <input type="text" id="iptables-add-ip" placeholder="输入要封禁的 IP" required style="margin:0;">
+          <button type="submit" class="secondary">添加</button>
         </form>
         <ul class="iptables-list" id="iptables-list">
           <li class="muted">加载中…</li>
@@ -152,15 +152,6 @@
 
     async function toggleBlock(ip, block) {
       const action = block ? '/api/firewall/block' : '/api/firewall/unblock';
-      if (block) {
-        const ok = await App.confirm({
-          title: '封禁 IP',
-          message: `确定封禁 ${ip}？将写入 iptables 并标记为已封禁。`,
-          confirmText: '封禁',
-          danger: true,
-        });
-        if (!ok) return;
-      }
       try {
         await App.api(action, { method: 'POST', body: JSON.stringify({ ip }) });
         App.toast(block ? `已封禁 ${ip}` : `已解封 ${ip}`, 'success');
@@ -239,23 +230,28 @@
           list.innerHTML = '<li class="muted">无</li>';
           return;
         }
-        hint.textContent = `IPGARD 链共 ${data.ips.length} 条 DROP 规则。`;
-        if (!data.ips.length) {
+        hint.textContent = `系统 filter 表共 ${data.rules.length} 条来源 IP 封禁规则。`;
+        if (!data.rules.length) {
           list.innerHTML = '<li class="muted">暂无规则</li>';
           return;
         }
-        list.innerHTML = data.ips.map(ip => `
+        list.innerHTML = data.rules.map(r => `
           <li>
-            <code>${App.esc(ip)}</code>
-            <button type="button" class="outline btn-sm" data-ipt-rm="${ip}">移除</button>
+            <div>
+              <code>${App.esc(r.ip)}</code>
+              <small class="muted">${App.esc(r.chain)} · ${App.esc(r.action)}</small>
+            </div>
+            <button type="button" class="outline btn-sm" data-ipt-rm="${App.esc(r.ip)}" data-ipt-chain="${App.esc(r.chain)}" data-ipt-action="${App.esc(r.action)}">移除</button>
           </li>
         `).join('');
         list.querySelectorAll('[data-ipt-rm]').forEach(btn => {
           btn.onclick = async () => {
             const ip = btn.dataset.iptRm;
+            const chain = btn.dataset.iptChain;
+            const action = btn.dataset.iptAction;
             const ok = await App.confirm({
               title: '移除规则',
-              message: `从 iptables 移除 ${ip}？`,
+              message: `从 ${chain} 链移除 ${ip}（${action}）？`,
               confirmText: '移除',
               danger: true,
             });
@@ -263,7 +259,7 @@
             try {
               await App.api('/api/firewall/iptables/unblock', {
                 method: 'POST',
-                body: JSON.stringify({ ip }),
+                body: JSON.stringify({ ip, chain, action }),
               });
               App.toast(`已移除 ${ip}`, 'success');
               await loadIptablesRules();

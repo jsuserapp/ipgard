@@ -165,6 +165,22 @@ td.actions button {
   margin: 0;
 }
 
+.iptables-add,
+form[role=group]#iptables-add-form {
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+form[role=group]#iptables-add-form input,
+form[role=group]#iptables-add-form button {
+  margin: 0;
+  width: auto;
+}
+
+form[role=group]#iptables-add-form button {
+  white-space: nowrap;
+}
+
 .iptables-add {
   display: flex;
   align-items: center;
@@ -201,6 +217,16 @@ td.actions button {
   gap: 0.5rem;
   padding: 0.35rem 0;
   border-bottom: 1px solid var(--pico-muted-border-color);
+}
+
+.iptables-list li > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.iptables-list li > div small {
+  display: block;
+  margin-top: 0.15rem;
 }
 
 .iptables-list li code {
