@@ -47,6 +47,9 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 		api.GET("/firewall/iptables", h.listIptablesRules)
 		api.POST("/firewall/iptables/block", h.iptablesBlock)
 		api.POST("/firewall/iptables/unblock", h.iptablesUnblock)
+		api.GET("/firewall/cidrs", h.listCIDRs)
+		api.POST("/firewall/cidrs", h.addCIDR)
+		api.POST("/firewall/cidrs/remove", h.removeCIDR)
 		api.GET("/settings", h.getSettings)
 		api.PUT("/settings/password", h.changePassword)
 		api.GET("/logs/monitored", h.listMonitoredLogs)
@@ -282,6 +285,87 @@ func (h *Handler) iptablesUnblock(c *gin.Context) {
 	}
 	if req.Chain == h.cfg.Firewall.Chain {
 		h.syncDBBlocked(req.IP, false)
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *Handler) listCIDRs(c *gin.Context) {
+	blocks, err := h.store.ListCIDRBlocks()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if blocks == nil {
+		blocks = []db.CIDRBlock{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"available": h.firewall.CIDRSupported(),
+		"ipset":     h.firewall.CIDRIpSetName(),
+		"cidrs":     blocks,
+	})
+}
+
+func (h *Handler) addCIDR(c *gin.Context) {
+	var req struct {
+		CIDR string `json:"cidr"`
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.CIDR == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cidr required"})
+		return
+	}
+	if !h.firewall.CIDRSupported() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ipset/iptables not available"})
+		return
+	}
+	normalized, err := firewall.ParseCIDR(req.CIDR)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	exists, err := h.store.HasCIDRBlock(normalized)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if exists {
+		c.JSON(http.StatusConflict, gin.H{"error": "cidr already exists"})
+		return
+	}
+	if err := h.firewall.AddCIDR(normalized); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.store.AddCIDRBlock(normalized, req.Note); err != nil {
+		_ = h.firewall.RemoveCIDR(normalized)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "cidr": normalized})
+}
+
+func (h *Handler) removeCIDR(c *gin.Context) {
+	var req struct {
+		CIDR string `json:"cidr"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.CIDR == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cidr required"})
+		return
+	}
+	normalized, err := firewall.ParseCIDR(req.CIDR)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if h.firewall.CIDRSupported() {
+		if err := h.firewall.RemoveCIDR(normalized); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := h.store.DeleteCIDRBlock(normalized); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "cidr not found"})
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

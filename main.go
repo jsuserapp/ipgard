@@ -35,7 +35,7 @@ func main() {
 			return
 		}
 
-		fw := firewall.New(cfg.Firewall.Enabled, cfg.Firewall.Chain, cfg.Firewall.IptablesPath)
+		fw := firewall.New(cfg.Firewall.Enabled, cfg.Firewall.Chain, cfg.Firewall.IptablesPath, cfg.Firewall.CIDRIpSet, cfg.Firewall.IpSetPath)
 		geo := geoip.NewOptional(cfg.GeoIP.Enabled, cfg.GeoIP.DBPath)
 		if geo.Available() {
 			if idx, err := store.IPLocationIndex(); err == nil && len(idx) > 0 {
@@ -59,6 +59,9 @@ func main() {
 		}
 		if fw.Available() {
 			jufmt.Green.Println("iptables 防火墙已启用，链:", cfg.Firewall.Chain)
+			if fw.CIDRSupported() {
+				jufmt.Green.Println("网段封禁 ipset:", cfg.Firewall.CIDRIpSet)
+			}
 		}
 
 		if err := srv.Start(ctx, store); err != nil {

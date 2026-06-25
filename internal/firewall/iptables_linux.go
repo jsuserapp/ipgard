@@ -16,16 +16,30 @@ type ipTables struct {
 	enabled      bool
 	chain        string
 	iptablesPath string
+	cidrIpSet    string
+	ipsetPath    string
 }
 
-func newPlatformManager(enabled bool, chain, iptablesPath string) Manager {
+func newPlatformManager(enabled bool, chain, iptablesPath, cidrIpSet, ipsetPath string) Manager {
 	if chain == "" {
 		chain = "IPGARD"
 	}
 	if iptablesPath == "" {
 		iptablesPath = "iptables"
 	}
-	return &ipTables{enabled: enabled, chain: chain, iptablesPath: iptablesPath}
+	if cidrIpSet == "" {
+		cidrIpSet = "IPGARD_NET"
+	}
+	if ipsetPath == "" {
+		ipsetPath = "ipset"
+	}
+	return &ipTables{
+		enabled:      enabled,
+		chain:        chain,
+		iptablesPath: iptablesPath,
+		cidrIpSet:    cidrIpSet,
+		ipsetPath:    ipsetPath,
+	}
 }
 
 func (f *ipTables) Available() bool {
@@ -33,6 +47,18 @@ func (f *ipTables) Available() bool {
 		return false
 	}
 	_, err := exec.LookPath(f.iptablesPath)
+	return err == nil
+}
+
+func (f *ipTables) CIDRIpSetName() string {
+	return f.cidrIpSet
+}
+
+func (f *ipTables) CIDRSupported() bool {
+	if !f.Available() {
+		return false
+	}
+	_, err := exec.LookPath(f.ipsetPath)
 	return err == nil
 }
 
@@ -291,6 +317,80 @@ func (f *ipTables) run(args ...string) error {
 func validateIP(ip string) error {
 	if net.ParseIP(ip) == nil {
 		return fmt.Errorf("invalid ip: %s", ip)
+	}
+	return nil
+}
+
+func (f *ipTables) AddCIDR(cidr string) error {
+	if !f.CIDRSupported() {
+		return ErrNotSupported
+	}
+	normalized, err := ParseCIDR(cidr)
+	if err != nil {
+		return err
+	}
+	if err := f.ensureCIDRSet(); err != nil {
+		return err
+	}
+	if err := f.ensureCIDRIptablesRule(); err != nil {
+		return err
+	}
+	return f.runIPSet("add", f.cidrIpSet, normalized, "-exist")
+}
+
+func (f *ipTables) RemoveCIDR(cidr string) error {
+	if !f.CIDRSupported() {
+		return ErrNotSupported
+	}
+	normalized, err := ParseCIDR(cidr)
+	if err != nil {
+		return err
+	}
+	return f.runIPSet("del", f.cidrIpSet, normalized, "-exist")
+}
+
+func (f *ipTables) SyncCIDRs(cidrs []string) error {
+	if !f.CIDRSupported() {
+		return nil
+	}
+	if err := f.ensureCIDRSet(); err != nil {
+		return err
+	}
+	if err := f.runIPSet("flush", f.cidrIpSet); err != nil {
+		return err
+	}
+	for _, cidr := range cidrs {
+		normalized, err := ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if err := f.runIPSet("add", f.cidrIpSet, normalized, "-exist"); err != nil {
+			return err
+		}
+	}
+	if len(cidrs) == 0 {
+		return nil
+	}
+	return f.ensureCIDRIptablesRule()
+}
+
+func (f *ipTables) ensureCIDRSet() error {
+	return f.runIPSet("create", f.cidrIpSet, "hash:net", "family", "inet", "hashsize", "4096", "maxelem", "65536", "-exist")
+}
+
+func (f *ipTables) ensureCIDRIptablesRule() error {
+	check := exec.Command(f.iptablesPath, "-t", filterTable, "-C", "INPUT", "-m", "set", "--match-set", f.cidrIpSet, "src", "-j", "DROP")
+	if err := check.Run(); err == nil {
+		return nil
+	}
+	return f.run("-t", filterTable, "-I", "INPUT", "1", "-m", "set", "--match-set", f.cidrIpSet, "src", "-j", "DROP")
+}
+
+func (f *ipTables) runIPSet(args ...string) error {
+	cmd := exec.Command(f.ipsetPath, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ipset %s: %w (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

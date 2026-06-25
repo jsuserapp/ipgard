@@ -18,9 +18,14 @@ type Manager interface {
 	UnblockRule(chain, ip, action string) error
 	Sync(ips []string) error
 	ListBlockRules() ([]BlockRule, error)
+	AddCIDR(cidr string) error
+	RemoveCIDR(cidr string) error
+	SyncCIDRs(cidrs []string) error
+	CIDRIpSetName() string
 	Available() bool
+	CIDRSupported() bool
 }
 
-func New(enabled bool, chain, iptablesPath string) Manager {
-	return newPlatformManager(enabled, chain, iptablesPath)
+func New(enabled bool, chain, iptablesPath, cidrIpSet, ipsetPath string) Manager {
+	return newPlatformManager(enabled, chain, iptablesPath, cidrIpSet, ipsetPath)
 }

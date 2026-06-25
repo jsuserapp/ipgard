@@ -16,8 +16,11 @@ scanner:
 firewall:
   enabled: true
   chain: IPGARD
+  # 网段封禁使用的 ipset 名称
+  cidr_ipset: IPGARD_NET
   # 与手动 iptables 一致；legacy 环境可设为 /sbin/iptables-legacy
   iptables_path: iptables
+  ipset_path: ipset
 
 geoip:
   enabled: true

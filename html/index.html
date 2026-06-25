@@ -106,8 +106,20 @@
       <article>
         <header>
           <button aria-label="关闭" rel="prev" id="iptables-close"></button>
-          <strong>iptables 封禁规则</strong>
+          <strong>防火墙规则</strong>
         </header>
+
+        <h4 style="margin-bottom:0.35rem;">网段封禁</h4>
+        <p class="muted" id="cidr-hint">通过 ipset 封禁网段，一条 iptables 规则高效拦截。</p>
+        <form id="cidr-add-form" role="group">
+          <input type="text" id="cidr-add-input" placeholder="如 221.229.0.0/16" required style="margin:0;">
+          <button type="submit" class="secondary">添加</button>
+        </form>
+        <ul class="iptables-list" id="cidr-list">
+          <li class="muted">加载中…</li>
+        </ul>
+
+        <h4 style="margin:1rem 0 0.35rem;">系统 iptables 规则</h4>
         <p class="muted" id="iptables-hint">读取系统 filter 表中所有按来源 IP 的 DROP/REJECT 规则。</p>
         <form id="iptables-add-form" role="group">
           <input type="text" id="iptables-add-ip" placeholder="输入要封禁的 IP" required style="margin:0;">
@@ -220,6 +232,57 @@
       document.getElementById('next-btn').disabled = offset + limit >= total;
     }
 
+    async function loadCIDRs() {
+      const list = document.getElementById('cidr-list');
+      const hint = document.getElementById('cidr-hint');
+      try {
+        const data = await App.api('/api/firewall/cidrs');
+        if (!data.available) {
+          hint.textContent = '网段封禁需要 Linux 环境并安装 ipset。';
+          list.innerHTML = '<li class="muted">不可用</li>';
+          return;
+        }
+        hint.textContent = `ipset ${data.ipset || 'IPGARD_NET'} 共 ${data.cidrs.length} 个网段。`;
+        if (!data.cidrs.length) {
+          list.innerHTML = '<li class="muted">暂无网段</li>';
+          return;
+        }
+        list.innerHTML = data.cidrs.map(r => `
+          <li>
+            <div>
+              <code>${App.esc(r.cidr)}</code>
+              ${r.note ? `<small class="muted">${App.esc(r.note)}</small>` : ''}
+            </div>
+            <button type="button" class="outline btn-sm" data-cidr-rm="${App.esc(r.cidr)}">移除</button>
+          </li>
+        `).join('');
+        list.querySelectorAll('[data-cidr-rm]').forEach(btn => {
+          btn.onclick = async () => {
+            const cidr = btn.dataset.cidrRm;
+            const ok = await App.confirm({
+              title: '移除网段',
+              message: `移除封禁网段 ${cidr}？`,
+              confirmText: '移除',
+              danger: true,
+            });
+            if (!ok) return;
+            try {
+              await App.api('/api/firewall/cidrs/remove', {
+                method: 'POST',
+                body: JSON.stringify({ cidr }),
+              });
+              App.toast(`已移除 ${cidr}`, 'success');
+              await loadCIDRs();
+            } catch (e) {
+              App.toast(e.message, 'error');
+            }
+          };
+        });
+      } catch (e) {
+        list.innerHTML = `<li class="error-msg">${App.esc(e.message)}</li>`;
+      }
+    }
+
     async function loadIptablesRules() {
       const list = document.getElementById('iptables-list');
       const hint = document.getElementById('iptables-hint');
@@ -303,7 +366,22 @@
       document.getElementById('iptables-close').onclick = () => document.getElementById('iptables-dialog').close();
       document.getElementById('iptables-btn').onclick = async () => {
         document.getElementById('iptables-dialog').showModal();
-        await loadIptablesRules();
+        await Promise.all([loadCIDRs(), loadIptablesRules()]);
+      };
+      document.getElementById('cidr-add-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const cidr = document.getElementById('cidr-add-input').value.trim();
+        try {
+          await App.api('/api/firewall/cidrs', {
+            method: 'POST',
+            body: JSON.stringify({ cidr }),
+          });
+          document.getElementById('cidr-add-input').value = '';
+          App.toast(`已封禁网段 ${cidr}`, 'success');
+          await loadCIDRs();
+        } catch (err) {
+          App.toast(err.message, 'error');
+        }
       };
       document.getElementById('iptables-add-form').onsubmit = async (e) => {
         e.preventDefault();

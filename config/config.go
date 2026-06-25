@@ -40,6 +40,8 @@ type FirewallConfig struct {
 	Enabled      bool   `yaml:"enabled"`
 	Chain        string `yaml:"chain"`
 	IptablesPath string `yaml:"iptables_path"`
+	CIDRIpSet    string `yaml:"cidr_ipset"`
+	IpSetPath    string `yaml:"ipset_path"`
 }
 
 type GeoIPConfig struct {
@@ -66,6 +68,8 @@ func Default() *Config {
 			Enabled:      true,
 			Chain:        "IPGARD",
 			IptablesPath: "iptables",
+			CIDRIpSet:    "IPGARD_NET",
+			IpSetPath:    "ipset",
 		},
 		GeoIP: GeoIPConfig{
 			Enabled: true,

@@ -99,6 +99,12 @@ func (s *Store) migrateColumns() error {
 		}
 	}
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ip_stats_blocked ON ip_stats(blocked)`)
+	_, _ = s.db.Exec(`
+CREATE TABLE IF NOT EXISTS cidr_blocks (
+	cidr TEXT PRIMARY KEY,
+	note TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+)`)
 	return nil
 }
 
