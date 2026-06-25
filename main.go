@@ -9,6 +9,8 @@ import (
 	"ipgard/config"
 	"ipgard/internal/auth"
 	"ipgard/internal/db"
+	"ipgard/internal/firewall"
+	"ipgard/internal/geoip"
 	"ipgard/internal/server"
 )
 
@@ -33,12 +35,30 @@ func main() {
 			return
 		}
 
-		srv := server.New(cfg, store, authMgr)
+		fw := firewall.New(cfg.Firewall.Enabled, cfg.Firewall.Chain, cfg.Firewall.IptablesPath)
+		geo := geoip.NewOptional(cfg.GeoIP.Enabled, cfg.GeoIP.DBPath)
+		if geo.Available() {
+			if idx, err := store.IPLocationIndex(); err == nil && len(idx) > 0 {
+				geo.Warm(idx)
+				jufmt.Green.Println(fmt.Sprintf("IP 归属地库已加载 (IPv4)，预热缓存 %d 条", len(idx)))
+			} else {
+				jufmt.Green.Println("IP 归属地库已加载 (IPv4):", geoip.ResolveDBPath(cfg.GeoIP.DBPath))
+			}
+		} else if cfg.GeoIP.Enabled {
+			jufmt.Red.Println("IP 归属地库未就绪，请放置 IPv4 库:", geoip.DefaultV4DB)
+		}
+		defer geo.Close()
+
+		srv := server.New(cfg, store, authMgr, fw, geo)
+
 		addr := cfg.ListenAddr()
 		if bp := cfg.NormalizedBasePath(); bp != "" {
 			jufmt.Green.Println(fmt.Sprintf("IP Gard 监听 http://127.0.0.1%s%s", addr, bp))
 		} else {
 			jufmt.Green.Println(fmt.Sprintf("IP Gard 监听 http://127.0.0.1%s", addr))
+		}
+		if fw.Available() {
+			jufmt.Green.Println("iptables 防火墙已启用，链:", cfg.Firewall.Chain)
 		}
 
 		if err := srv.Start(ctx, store); err != nil {

@@ -12,18 +12,24 @@
     <nav class="app-nav">
       <p class="brand">IP Gard</p>
       <div class="links">
-        <a href="./">访问记录</a>
+        <a href="./">IP 统计</a>
         <a href="./settings" aria-current="page">设置</a>
-        <button class="secondary outline" id="logout-btn" type="button">退出</button>
+        <button class="secondary outline btn-nav" id="logout-btn" type="button">退出</button>
       </div>
     </nav>
 
+    <div id="scan-banner" class="scan-banner hidden" role="status" aria-live="polite">
+      <span class="scan-dot" aria-hidden="true"></span>
+      <span class="scan-label">正在扫描日志…</span>
+      <progress value="0" max="100"></progress>
+    </div>
+
     <section>
       <h2>监控日志</h2>
-      <p class="muted">添加 Apache / Nginx 等访问日志文件，系统将定期读取并解析访问 IP。</p>
+      <p class="muted">添加 Apache / Nginx 等访问日志文件。扫描会查找系统常见路径，以及项目下的 <code>testdata/</code>、<code>testdata/logs/</code>（本地测试用）。</p>
 
       <div class="actions" style="margin:1rem 0;">
-        <button type="button" id="discover-btn">扫描系统日志</button>
+        <button type="button" id="discover-btn">扫描日志文件</button>
         <button type="button" id="add-custom-btn" class="secondary outline">手动添加路径</button>
       </div>
 
@@ -100,9 +106,20 @@
       });
       ul.querySelectorAll('[data-delete]').forEach(btn => {
         btn.onclick = async () => {
-          if (!confirm('确定删除此监控项？')) return;
-          await App.api(`/api/logs/monitored/${btn.dataset.delete}`, { method: 'DELETE' });
-          loadMonitored();
+          const ok = await App.confirm({
+            title: '删除监控',
+            message: '确定删除此监控项？',
+            confirmText: '删除',
+            danger: true,
+          });
+          if (!ok) return;
+          try {
+            await App.api(`/api/logs/monitored/${btn.dataset.delete}`, { method: 'DELETE' });
+            App.toast('已删除', 'success');
+            loadMonitored();
+          } catch (e) {
+            App.toast(e.message, 'error');
+          }
         };
       });
     }
@@ -114,7 +131,7 @@
       list.innerHTML = '<li class="muted">扫描中…</li>';
       const data = await App.api('/api/logs/discover');
       if (!data.candidates.length) {
-        list.innerHTML = '<li class="muted">未发现常见 Apache/Nginx 日志（可手动添加路径）</li>';
+        list.innerHTML = '<li class="muted">未发现日志文件（可将服务器日志放到 testdata/logs/ 后重试，或手动添加路径）</li>';
         return;
       }
       list.innerHTML = data.candidates.map(c => `
@@ -137,10 +154,15 @@
             btn.textContent = '已添加';
             btn.disabled = true;
           } catch (e) {
-            alert(e.message);
+            App.toast(e.message, 'error');
           }
         };
       });
+    }
+
+    async function loadScanStatus() {
+      const data = await App.api('/api/stats');
+      App.renderScannerBanner(data.scanner, 'scan-banner');
     }
 
     (async () => {
@@ -167,7 +189,7 @@
           document.getElementById('custom-form').reset();
           loadMonitored();
         } catch (err) {
-          alert(err.message);
+          App.toast(err.message, 'error');
         }
       };
       document.getElementById('password-form').onsubmit = async (e) => {
@@ -191,6 +213,15 @@
         msg.classList.remove('hidden');
       };
       await loadMonitored();
+      await loadScanStatus();
+      let pollMs = 15000;
+      (function schedule() {
+        setTimeout(async () => {
+          await loadScanStatus();
+          pollMs = document.getElementById('scan-banner')?.classList.contains('hidden') ? 15000 : 2000;
+          schedule();
+        }, pollMs);
+      })();
     })();
   </script>
 </body>

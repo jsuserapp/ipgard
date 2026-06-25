@@ -11,10 +11,12 @@ import (
 const DefaultConfigFile = "config.yaml"
 
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Auth    AuthConfig    `yaml:"auth"`
+	Server   ServerConfig   `yaml:"server"`
+	Auth     AuthConfig     `yaml:"auth"`
 	Database DatabaseConfig `yaml:"database"`
-	Scanner ScannerConfig `yaml:"scanner"`
+	Scanner  ScannerConfig  `yaml:"scanner"`
+	Firewall FirewallConfig `yaml:"firewall"`
+	GeoIP    GeoIPConfig    `yaml:"geoip"`
 }
 
 type ServerConfig struct {
@@ -34,6 +36,17 @@ type ScannerConfig struct {
 	IntervalSeconds int `yaml:"interval_seconds"`
 }
 
+type FirewallConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	Chain        string `yaml:"chain"`
+	IptablesPath string `yaml:"iptables_path"`
+}
+
+type GeoIPConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	DBPath  string `yaml:"db_path"`
+}
+
 func Default() *Config {
 	return &Config{
 		Server: ServerConfig{
@@ -48,6 +61,15 @@ func Default() *Config {
 		},
 		Scanner: ScannerConfig{
 			IntervalSeconds: 10,
+		},
+		Firewall: FirewallConfig{
+			Enabled:      true,
+			Chain:        "IPGARD",
+			IptablesPath: "iptables",
+		},
+		GeoIP: GeoIPConfig{
+			Enabled: true,
+			DBPath:  "./data/ip2region_v4.xdb",
 		},
 	}
 }

@@ -12,3 +12,13 @@ database:
 
 scanner:
   interval_seconds: 10
+
+firewall:
+  enabled: true
+  chain: IPGARD
+  iptables_path: iptables
+
+geoip:
+  enabled: true
+  # 使用 IPv4 库即可；日志无 IPv6 时可忽略 ip2region_v6.xdb
+  db_path: "./data/ip2region_v4.xdb"

@@ -7,19 +7,36 @@ import (
 	"time"
 
 	"ipgard/internal/db"
+	"ipgard/internal/geoip"
 	"ipgard/internal/parser"
 )
 
+const batchFlushLines = 5000
+
 type Scanner struct {
 	store    *db.Store
+	geo      geoip.Resolver
 	interval time.Duration
+	status   *statusTracker
 }
 
-func New(store *db.Store, interval time.Duration) *Scanner {
+func New(store *db.Store, geo geoip.Resolver, interval time.Duration) *Scanner {
 	if interval <= 0 {
 		interval = 10 * time.Second
 	}
-	return &Scanner{store: store, interval: interval}
+	if geo == nil {
+		geo = geoip.NewOptional(false, "")
+	}
+	return &Scanner{
+		store:    store,
+		geo:      geo,
+		interval: interval,
+		status:   newStatusTracker(),
+	}
+}
+
+func (s *Scanner) Status() Status {
+	return s.status.Snapshot()
 }
 
 func (s *Scanner) Run(ctx context.Context) {
@@ -43,10 +60,21 @@ func (s *Scanner) scanOnce() {
 	if err != nil {
 		return
 	}
+	enabled := make([]db.MonitoredLog, 0, len(logs))
 	for _, log := range logs {
-		if !log.Enabled {
-			continue
+		if log.Enabled {
+			enabled = append(enabled, log)
 		}
+	}
+	if len(enabled) == 0 {
+		return
+	}
+
+	s.status.beginScan(len(enabled))
+	defer s.status.endScan()
+
+	for i, log := range enabled {
+		s.status.setFile(i+1, log.Path)
 		_ = s.scanFile(&log)
 	}
 }
@@ -73,6 +101,9 @@ func (s *Scanner) scanFile(m *db.MonitoredLog) error {
 		offset = 0
 	}
 
+	bytesTotal := info.Size() - offset
+	s.status.setBytesTotal(bytesTotal)
+
 	if _, err := f.Seek(offset, 0); err != nil {
 		return err
 	}
@@ -82,31 +113,51 @@ func (s *Scanner) scanFile(m *db.MonitoredLog) error {
 		format = "auto"
 	}
 
+	batch := make(map[string][]db.Visit)
+	lineCount := 0
 	reader := bufio.NewReader(f)
+
+	lookup := func(ip string) string {
+		if s.geo == nil || !s.geo.Available() {
+			return ""
+		}
+		return s.geo.Lookup(ip)
+	}
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		_ = s.store.RecordVisitsBatch(batch, lookup)
+		batch = make(map[string][]db.Visit)
+		lineCount = 0
+		if pos, err := f.Seek(0, 1); err == nil {
+			s.status.setProgress(pos - offset)
+		}
+	}
+
 	for {
 		line, err := reader.ReadString('\n')
 		if len(line) > 0 {
 			entry, _ := parser.ParseLine(line, format)
 			if entry != nil {
-				rec := &db.AccessRecord{
-					IP:         entry.IP,
-					Method:     entry.Method,
-					Path:       entry.Path,
-					Status:     entry.Status,
-					Bytes:      entry.Bytes,
-					Referer:    entry.Referer,
-					UserAgent:  entry.UserAgent,
-					LogSource:  m.Path,
-					AccessedAt: entry.Time,
+				batch[entry.IP] = append(batch[entry.IP], db.Visit{
+					Path: entry.Path,
+					At:   entry.Time,
+				})
+				lineCount++
+				if lineCount >= batchFlushLines {
+					flush()
 				}
-				_ = s.store.InsertAccessRecord(rec)
 			}
 		}
 		if err != nil {
 			break
 		}
 	}
+	flush()
 
 	newOffset, _ := f.Seek(0, 1)
+	s.status.setProgress(newOffset - offset)
 	return s.store.UpdateMonitoredLogState(m.ID, newOffset, inode)
 }

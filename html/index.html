@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>IP Gard - 访问记录</title>
+  <title>IP Gard - IP 统计</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <link rel="stylesheet" href="./static/css/style.css">
 </head>
@@ -12,47 +12,69 @@
     <nav class="app-nav">
       <p class="brand">IP Gard</p>
       <div class="links">
-        <a href="./" aria-current="page">访问记录</a>
+        <a href="./" aria-current="page">IP 统计</a>
         <a href="./settings">设置</a>
-        <button class="secondary outline" id="logout-btn" type="button">退出</button>
+        <button class="secondary outline btn-nav" id="logout-btn" type="button">退出</button>
       </div>
     </nav>
 
+    <div id="scan-banner" class="scan-banner hidden" role="status" aria-live="polite">
+      <span class="scan-dot" aria-hidden="true"></span>
+      <span class="scan-label">正在扫描日志…</span>
+      <progress value="0" max="100"></progress>
+    </div>
+
     <section class="stats-grid">
       <article class="stat-card">
-        <span class="muted">总记录数</span>
-        <strong id="stat-total">-</strong>
+        <span class="muted">独立 IP 数</span>
+        <strong id="stat-ips">-</strong>
       </article>
       <article class="stat-card">
-        <span class="muted">独立 IP（Top 20）</span>
-        <strong id="stat-ips">-</strong>
+        <span class="muted">总访问次数</span>
+        <strong id="stat-visits">-</strong>
+      </article>
+      <article class="stat-card">
+        <span class="muted">已封禁</span>
+        <strong id="stat-blocked">-</strong>
+      </article>
+      <article class="stat-card">
+        <span class="muted">归属地库</span>
+        <strong id="stat-geo">-</strong>
       </article>
     </section>
 
     <section>
-      <header style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:1rem;">
-        <h2 style="margin:0;">访问记录</h2>
-        <form id="filter-form" class="actions" role="search">
-          <input type="search" id="filter-ip" placeholder="筛选 IP" style="margin:0;width:160px;">
-          <button type="submit" class="secondary">搜索</button>
-          <button type="button" id="refresh-btn" class="outline">刷新</button>
-        </form>
-      </header>
+      <div id="filter-bar" role="search">
+          <input type="search" id="filter-ip" placeholder="筛选 IP" style="margin:0;width:140px;">
+          <select id="filter-sort" style="margin:0;width:auto;">
+            <option value="visit_count">按总次数</option>
+            <option value="freq_10min">按10分钟频率</option>
+            <option value="last_seen">按最后访问</option>
+          </select>
+          <select id="filter-blocked" style="margin:0;width:auto;">
+            <option value="">全部</option>
+            <option value="0">未封禁</option>
+            <option value="1">已封禁</option>
+          </select>
+          <button type="button" id="refresh-btn" class="outline btn-sm">刷新</button>
+          <button type="button" id="iptables-btn" class="outline btn-sm">iptables 规则</button>
+        </div>
       <div class="table-wrap">
         <table class="compact">
           <thead>
             <tr>
-              <th>时间</th>
               <th>IP</th>
-              <th>方法</th>
-              <th>路径</th>
+              <th>归属地</th>
+              <th>总次数</th>
+              <th>10分钟频率</th>
+              <th>最后访问</th>
+              <th>最近链接</th>
               <th>状态</th>
-              <th>大小</th>
-              <th>来源日志</th>
+              <th>操作</th>
             </tr>
           </thead>
-          <tbody id="records-body">
-            <tr><td colspan="7" class="muted">加载中…</td></tr>
+          <tbody id="ips-body">
+            <tr><td colspan="8" class="muted">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -65,15 +87,37 @@
       </div>
     </section>
 
-    <section style="margin-top:2rem;">
-      <h3>访问 IP 排行</h3>
-      <div class="table-wrap">
-        <table class="compact">
-          <thead><tr><th>IP</th><th>次数</th></tr></thead>
-          <tbody id="top-ips-body"></tbody>
-        </table>
-      </div>
-    </section>
+    <dialog id="detail-dialog">
+      <article>
+        <header>
+          <button aria-label="关闭" rel="prev" id="detail-close"></button>
+          <strong id="detail-ip"></strong>
+        </header>
+        <p><span class="muted">归属地</span> <span id="detail-location"></span></p>
+        <p><span class="muted">总次数</span> <span id="detail-count"></span></p>
+        <p><span class="muted">10分钟频率</span> <span id="detail-freq"></span></p>
+        <p><span class="muted">最后访问</span> <span id="detail-last"></span></p>
+        <h4>最近访问链接（最多 100 条）</h4>
+        <ul id="detail-paths"></ul>
+      </article>
+    </dialog>
+
+    <dialog id="iptables-dialog">
+      <article>
+        <header>
+          <button aria-label="关闭" rel="prev" id="iptables-close"></button>
+          <strong>iptables 封禁规则</strong>
+        </header>
+        <p class="muted" id="iptables-hint">读取 IPGARD 链中的 DROP 规则，可添加或移除。</p>
+        <form id="iptables-add-form" class="iptables-add">
+          <input type="text" id="iptables-add-ip" placeholder="输入要封禁的 IP" required>
+          <button type="submit" class="secondary btn-sm">添加</button>
+        </form>
+        <ul class="iptables-list" id="iptables-list">
+          <li class="muted">加载中…</li>
+        </ul>
+      </article>
+    </dialog>
   </main>
   <script src="./static/js/app.js"></script>
   <script>
@@ -81,62 +125,220 @@
     const limit = 50;
     let total = 0;
     let filterIP = '';
+    let sort = 'visit_count';
+    let blockedFilter = '';
 
     async function loadStats() {
       const data = await App.api('/api/stats');
-      document.getElementById('stat-total').textContent = data.total_records;
-      document.getElementById('stat-ips').textContent = data.top_ips.length;
-      const tbody = document.getElementById('top-ips-body');
-      tbody.innerHTML = data.top_ips.map(r =>
-        `<tr><td>${App.esc(r.ip)}</td><td>${r.count}</td></tr>`
-      ).join('') || '<tr><td colspan="2" class="muted">暂无数据</td></tr>';
+      document.getElementById('stat-ips').textContent = data.total_ips;
+      document.getElementById('stat-visits').textContent = data.total_visits;
+      document.getElementById('stat-blocked').textContent = data.blocked_ips;
+      document.getElementById('stat-geo').textContent = data.geoip_ready ? '就绪' : '不可用';
+      App.renderScannerBanner(data.scanner, 'scan-banner');
     }
 
-    async function loadRecords() {
-      const q = new URLSearchParams({ limit, offset });
+    function readFiltersFromUI() {
+      filterIP = document.getElementById('filter-ip').value.trim();
+      sort = document.getElementById('filter-sort').value;
+      blockedFilter = document.getElementById('filter-blocked').value;
+      App.saveListPrefs({ sort, blocked: blockedFilter, ip: filterIP });
+    }
+
+    function applyFilters() {
+      readFiltersFromUI();
+      offset = 0;
+      loadIPs(true);
+    }
+
+    async function toggleBlock(ip, block) {
+      const action = block ? '/api/firewall/block' : '/api/firewall/unblock';
+      if (block) {
+        const ok = await App.confirm({
+          title: '封禁 IP',
+          message: `确定封禁 ${ip}？将写入 iptables 并标记为已封禁。`,
+          confirmText: '封禁',
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      try {
+        await App.api(action, { method: 'POST', body: JSON.stringify({ ip }) });
+        App.toast(block ? `已封禁 ${ip}` : `已解封 ${ip}`, 'success');
+        await loadIPs(true);
+        loadStats();
+      } catch (e) {
+        App.toast(e.message, 'error');
+      }
+    }
+
+    async function showDetail(ip) {
+      const data = await App.api('/api/ips/' + encodeURIComponent(ip));
+      const row = data.ip;
+      document.getElementById('detail-ip').textContent = row.ip;
+      document.getElementById('detail-location').textContent = row.location || '-';
+      document.getElementById('detail-count').textContent = row.visit_count;
+      document.getElementById('detail-freq').textContent = row.freq_10min + ' 次/10分钟';
+      document.getElementById('detail-last').textContent = App.fmtTime(row.last_seen_at);
+      const ul = document.getElementById('detail-paths');
+      ul.innerHTML = (row.recent_paths || []).map(p =>
+        `<li><code>${App.esc(p.path)}</code> <small class="muted">${App.fmtTime(p.at)}</small></li>`
+      ).join('') || '<li class="muted">无</li>';
+      document.getElementById('detail-dialog').showModal();
+    }
+
+    async function loadIPs(forceCount) {
+      const q = new URLSearchParams({ limit, offset, sort });
       if (filterIP) q.set('ip', filterIP);
-      const data = await App.api('/api/records?' + q);
-      total = data.total;
-      const tbody = document.getElementById('records-body');
-      if (!data.records.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="muted">暂无记录，请在设置中添加日志文件</td></tr>';
+      if (blockedFilter !== '') q.set('blocked', blockedFilter);
+      if (!forceCount && offset > 0 && total > 0) q.set('skip_total', '1');
+      const data = await App.api('/api/ips?' + q);
+      if (data.total >= 0) total = data.total;
+      const tbody = document.getElementById('ips-body');
+      if (!data.ips.length) {
+        tbody.innerHTML = '<tr><td colspan="8" class="muted">暂无数据，请在设置中添加日志文件</td></tr>';
       } else {
-        tbody.innerHTML = data.records.map(r => `
+        tbody.innerHTML = data.ips.map(r => `
           <tr>
-            <td>${App.fmtTime(r.accessed_at)}</td>
-            <td><strong>${App.esc(r.ip)}</strong></td>
-            <td>${App.esc(r.method)}</td>
-            <td class="path-cell" title="${App.esc(r.path)}">${App.esc(r.path)}</td>
-            <td>${r.status || '-'}</td>
-            <td>${App.fmtBytes(r.bytes)}</td>
-            <td class="path-cell" title="${App.esc(r.log_source)}">${App.esc(r.log_source)}</td>
+            <td><a href="#" data-detail="${r.ip}"><strong>${App.esc(r.ip)}</strong></a></td>
+            <td class="path-cell" title="${App.esc(r.location)}">${App.esc(r.location) || '-'}</td>
+            <td>${r.visit_count}</td>
+            <td>${r.freq_10min}</td>
+            <td>${App.fmtTime(r.last_seen_at)}</td>
+            <td class="path-cell" title="${App.esc(r.top_path)}">${App.esc(r.top_path) || '-'}</td>
+            <td>${r.blocked ? '<mark>已封禁</mark>' : '正常'}</td>
+            <td class="actions">
+              ${r.blocked
+                ? `<button type="button" class="secondary outline btn-sm" data-unblock="${r.ip}">解封</button>`
+                : `<button type="button" class="outline btn-sm" data-block="${r.ip}">封禁</button>`}
+            </td>
           </tr>
         `).join('');
+        tbody.querySelectorAll('[data-detail]').forEach(a => {
+          a.onclick = (e) => { e.preventDefault(); showDetail(a.dataset.detail); };
+        });
+        tbody.querySelectorAll('[data-block]').forEach(btn => {
+          btn.onclick = () => toggleBlock(btn.dataset.block, true);
+        });
+        tbody.querySelectorAll('[data-unblock]').forEach(btn => {
+          btn.onclick = () => toggleBlock(btn.dataset.unblock, false);
+        });
       }
       document.getElementById('page-info').textContent =
-        `共 ${total} 条 · 第 ${Math.floor(offset / limit) + 1} 页`;
+        `共 ${total} 个 IP · 第 ${Math.floor(offset / limit) + 1} 页`;
       document.getElementById('prev-btn').disabled = offset <= 0;
       document.getElementById('next-btn').disabled = offset + limit >= total;
     }
 
-    async function refresh() {
-      await Promise.all([loadStats(), loadRecords()]);
+    async function loadIptablesRules() {
+      const list = document.getElementById('iptables-list');
+      const hint = document.getElementById('iptables-hint');
+      try {
+        const data = await App.api('/api/firewall/iptables');
+        if (!data.available) {
+          hint.textContent = '当前环境 iptables 不可用（仅 Linux 生产环境有效）。';
+          list.innerHTML = '<li class="muted">无</li>';
+          return;
+        }
+        hint.textContent = `IPGARD 链共 ${data.ips.length} 条 DROP 规则。`;
+        if (!data.ips.length) {
+          list.innerHTML = '<li class="muted">暂无规则</li>';
+          return;
+        }
+        list.innerHTML = data.ips.map(ip => `
+          <li>
+            <code>${App.esc(ip)}</code>
+            <button type="button" class="outline btn-sm" data-ipt-rm="${ip}">移除</button>
+          </li>
+        `).join('');
+        list.querySelectorAll('[data-ipt-rm]').forEach(btn => {
+          btn.onclick = async () => {
+            const ip = btn.dataset.iptRm;
+            const ok = await App.confirm({
+              title: '移除规则',
+              message: `从 iptables 移除 ${ip}？`,
+              confirmText: '移除',
+              danger: true,
+            });
+            if (!ok) return;
+            try {
+              await App.api('/api/firewall/iptables/unblock', {
+                method: 'POST',
+                body: JSON.stringify({ ip }),
+              });
+              App.toast(`已移除 ${ip}`, 'success');
+              await loadIptablesRules();
+              loadIPs(true);
+            } catch (e) {
+              App.toast(e.message, 'error');
+            }
+          };
+        });
+      } catch (e) {
+        list.innerHTML = `<li class="error-msg">${App.esc(e.message)}</li>`;
+      }
+    }
+
+    async function refresh(label = 'page load') {
+      const t0 = performance.now();
+      console.group(`[ipgard] ${label}`);
+      await Promise.all([loadStats(), loadIPs(true)]);
+      console.log(`parallel total: ${(performance.now() - t0).toFixed(0)}ms`);
+      console.groupEnd();
+    }
+
+    function schedulePoll() {
+      setTimeout(async () => {
+        await loadStats();
+        const scanning = !document.getElementById('scan-banner')?.classList.contains('hidden');
+        if (!scanning) await loadIPs();
+        schedulePoll();
+      }, document.getElementById('scan-banner')?.classList.contains('hidden') ? 15000 : 2000);
     }
 
     (async () => {
+      const tInit = performance.now();
       if (!(await App.requireAuth())) return;
+      console.log(`[ipgard] auth — ${(performance.now() - tInit).toFixed(0)}ms`);
+
+      const prefs = App.loadListPrefs();
+      sort = prefs.sort;
+      blockedFilter = prefs.blocked;
+      filterIP = prefs.ip;
+      document.getElementById('filter-sort').value = sort;
+      document.getElementById('filter-blocked').value = blockedFilter;
+      document.getElementById('filter-ip').value = filterIP;
+
       document.getElementById('logout-btn').onclick = () => App.logout();
-      document.getElementById('filter-form').onsubmit = (e) => {
-        e.preventDefault();
-        filterIP = document.getElementById('filter-ip').value.trim();
-        offset = 0;
-        loadRecords();
+      document.getElementById('detail-close').onclick = () => document.getElementById('detail-dialog').close();
+      document.getElementById('iptables-close').onclick = () => document.getElementById('iptables-dialog').close();
+      document.getElementById('iptables-btn').onclick = async () => {
+        document.getElementById('iptables-dialog').showModal();
+        await loadIptablesRules();
       };
-      document.getElementById('refresh-btn').onclick = refresh;
-      document.getElementById('prev-btn').onclick = () => { offset = Math.max(0, offset - limit); loadRecords(); };
-      document.getElementById('next-btn').onclick = () => { offset += limit; loadRecords(); };
+      document.getElementById('iptables-add-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const ip = document.getElementById('iptables-add-ip').value.trim();
+        try {
+          await App.api('/api/firewall/iptables/block', {
+            method: 'POST',
+            body: JSON.stringify({ ip }),
+          });
+          document.getElementById('iptables-add-ip').value = '';
+          App.toast(`已添加封禁 ${ip}`, 'success');
+          await loadIptablesRules();
+          loadIPs(true);
+        } catch (err) {
+          App.toast(err.message, 'error');
+        }
+      };
+      document.getElementById('filter-sort').onchange = applyFilters;
+      document.getElementById('filter-blocked').onchange = applyFilters;
+      document.getElementById('filter-ip').oninput = App.debounce(applyFilters, 400);
+      document.getElementById('refresh-btn').onclick = () => refresh('manual refresh');
+      document.getElementById('prev-btn').onclick = () => { offset = Math.max(0, offset - limit); loadIPs(); };
+      document.getElementById('next-btn').onclick = () => { offset += limit; loadIPs(); };
       await refresh();
-      setInterval(refresh, 15000);
+      schedulePoll();
     })();
   </script>
 </body>

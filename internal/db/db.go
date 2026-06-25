@@ -55,27 +55,50 @@ CREATE TABLE IF NOT EXISTS monitored_logs (
 	updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS access_records (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	ip TEXT NOT NULL,
-	method TEXT,
-	path TEXT,
-	status INTEGER,
-	bytes INTEGER,
-	referer TEXT,
-	user_agent TEXT,
-	log_source TEXT NOT NULL,
-	accessed_at TEXT NOT NULL,
-	created_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS ip_stats (
+	ip TEXT PRIMARY KEY,
+	visit_count INTEGER NOT NULL DEFAULT 0,
+	last_seen_at TEXT NOT NULL,
+	freq_10min INTEGER NOT NULL DEFAULT 0,
+	recent_events TEXT NOT NULL DEFAULT '[]',
+	recent_paths TEXT NOT NULL DEFAULT '[]',
+	blocked INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_access_records_ip ON access_records(ip);
-CREATE INDEX IF NOT EXISTS idx_access_records_accessed_at ON access_records(accessed_at);
-CREATE INDEX IF NOT EXISTS idx_access_records_log_source ON access_records(log_source);
+CREATE INDEX IF NOT EXISTS idx_ip_stats_visit_count ON ip_stats(visit_count DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_stats_last_seen ON ip_stats(last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ip_stats_freq ON ip_stats(freq_10min DESC);
+
+CREATE TABLE IF NOT EXISTS global_stats (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	total_ips INTEGER NOT NULL DEFAULT 0,
+	total_visits INTEGER NOT NULL DEFAULT 0,
+	blocked_ips INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO global_stats (id, total_ips, total_visits, blocked_ips) VALUES (1, 0, 0, 0);
+
+DROP TABLE IF EXISTS access_records;
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}
+	if err := s.migrateColumns(); err != nil {
+		return err
+	}
+	return s.ensureGlobalStats()
+}
+
+func (s *Store) migrateColumns() error {
+	var n int
+	_ = s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('ip_stats') WHERE name = 'location'`).Scan(&n)
+	if n == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE ip_stats ADD COLUMN location TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add location column: %w", err)
+		}
+	}
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_ip_stats_blocked ON ip_stats(blocked)`)
 	return nil
 }
 
@@ -184,121 +207,4 @@ func (s *Store) SetMonitoredLogEnabled(id int64, enabled bool) error {
 func (s *Store) DeleteMonitoredLog(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM monitored_logs WHERE id = ?`, id)
 	return err
-}
-
-type AccessRecord struct {
-	ID         int64     `json:"id"`
-	IP         string    `json:"ip"`
-	Method     string    `json:"method"`
-	Path       string    `json:"path"`
-	Status     int       `json:"status"`
-	Bytes      int64     `json:"bytes"`
-	Referer    string    `json:"referer"`
-	UserAgent  string    `json:"user_agent"`
-	LogSource  string    `json:"log_source"`
-	AccessedAt time.Time `json:"accessed_at"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-type RecordFilter struct {
-	IP        string
-	LogSource string
-	Limit     int
-	Offset    int
-}
-
-func (s *Store) InsertAccessRecord(r *AccessRecord) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := s.db.Exec(`
-INSERT INTO access_records (ip, method, path, status, bytes, referer, user_agent, log_source, accessed_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, r.IP, r.Method, r.Path, r.Status, r.Bytes, r.Referer, r.UserAgent, r.LogSource,
-		r.AccessedAt.UTC().Format(time.RFC3339), now)
-	if err != nil {
-		return err
-	}
-	r.ID, _ = res.LastInsertId()
-	return nil
-}
-
-func (s *Store) ListAccessRecords(f RecordFilter) ([]AccessRecord, int, error) {
-	if f.Limit <= 0 || f.Limit > 500 {
-		f.Limit = 50
-	}
-
-	where := "WHERE 1=1"
-	args := []any{}
-	if f.IP != "" {
-		where += " AND ip LIKE ?"
-		args = append(args, "%"+f.IP+"%")
-	}
-	if f.LogSource != "" {
-		where += " AND log_source = ?"
-		args = append(args, f.LogSource)
-	}
-
-	var total int
-	countArgs := append([]any{}, args...)
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM access_records `+where, countArgs...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-
-	query := `
-SELECT id, ip, method, path, status, bytes, referer, user_agent, log_source, accessed_at, created_at
-FROM access_records ` + where + ` ORDER BY accessed_at DESC LIMIT ? OFFSET ?`
-	args = append(args, f.Limit, f.Offset)
-
-	rows, err := s.db.Query(query, args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-
-	var list []AccessRecord
-	for rows.Next() {
-		var r AccessRecord
-		var accessed, created string
-		if err := rows.Scan(&r.ID, &r.IP, &r.Method, &r.Path, &r.Status, &r.Bytes, &r.Referer, &r.UserAgent, &r.LogSource, &accessed, &created); err != nil {
-			return nil, 0, err
-		}
-		r.AccessedAt, _ = time.Parse(time.RFC3339, accessed)
-		r.CreatedAt, _ = time.Parse(time.RFC3339, created)
-		list = append(list, r)
-	}
-	return list, total, rows.Err()
-}
-
-type IPStat struct {
-	IP    string `json:"ip"`
-	Count int    `json:"count"`
-}
-
-func (s *Store) TopIPs(limit int) ([]IPStat, error) {
-	if limit <= 0 {
-		limit = 20
-	}
-	rows, err := s.db.Query(`
-SELECT ip, COUNT(*) AS cnt FROM access_records
-GROUP BY ip ORDER BY cnt DESC LIMIT ?
-`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	stats := make([]IPStat, 0)
-	for rows.Next() {
-		var st IPStat
-		if err := rows.Scan(&st.IP, &st.Count); err != nil {
-			return nil, err
-		}
-		stats = append(stats, st)
-	}
-	return stats, rows.Err()
-}
-
-func (s *Store) RecordCount() (int, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM access_records`).Scan(&n)
-	return n, err
 }

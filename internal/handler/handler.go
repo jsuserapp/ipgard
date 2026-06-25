@@ -1,28 +1,36 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"ipgard/config"
 	"ipgard/internal/auth"
 	"ipgard/internal/db"
+	"ipgard/internal/firewall"
+	"ipgard/internal/geoip"
 	"ipgard/internal/logdiscover"
+	"ipgard/internal/scanner"
 )
 
 const sessionKey = "authenticated"
 
 type Handler struct {
-	cfg  *config.Config
-	store *db.Store
-	auth *auth.Manager
+	cfg      *config.Config
+	store    *db.Store
+	auth     *auth.Manager
+	firewall firewall.Manager
+	geo      geoip.Resolver
+	scanner  *scanner.Scanner
 }
 
-func New(cfg *config.Config, store *db.Store, authMgr *auth.Manager) *Handler {
-	return &Handler{cfg: cfg, store: store, auth: authMgr}
+func New(cfg *config.Config, store *db.Store, authMgr *auth.Manager, fw firewall.Manager, geo geoip.Resolver, scan *scanner.Scanner) *Handler {
+	return &Handler{cfg: cfg, store: store, auth: authMgr, firewall: fw, geo: geo, scanner: scan}
 }
 
 func (h *Handler) Register(r *gin.RouterGroup) {
@@ -33,8 +41,14 @@ func (h *Handler) Register(r *gin.RouterGroup) {
 	api.Use(h.requireAuth)
 	{
 		api.GET("/me", h.me)
-		api.GET("/records", h.listRecords)
+		api.GET("/ips", h.listIPs)
+		api.GET("/ips/:ip", h.getIP)
 		api.GET("/stats", h.stats)
+		api.POST("/firewall/block", h.blockIP)
+		api.POST("/firewall/unblock", h.unblockIP)
+		api.GET("/firewall/iptables", h.listIptablesRules)
+		api.POST("/firewall/iptables/block", h.iptablesBlock)
+		api.POST("/firewall/iptables/unblock", h.iptablesUnblock)
 		api.GET("/settings", h.getSettings)
 		api.PUT("/settings/password", h.changePassword)
 		api.GET("/logs/monitored", h.listMonitoredLogs)
@@ -85,38 +99,198 @@ func (h *Handler) logout(c *gin.Context) {
 }
 
 func (h *Handler) me(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"authenticated": true})
+	c.JSON(http.StatusOK, gin.H{
+		"authenticated":    true,
+		"firewall_enabled": h.firewall.Available(),
+	})
 }
 
-func (h *Handler) listRecords(c *gin.Context) {
+func (h *Handler) listIPs(c *gin.Context) {
+	t0 := time.Now()
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	filter := db.RecordFilter{
+	filter := db.IPFilter{
 		IP:        c.Query("ip"),
-		LogSource: c.Query("log_source"),
+		Sort:      c.DefaultQuery("sort", "visit_count"),
 		Limit:     limit,
 		Offset:    offset,
+		SkipTotal: c.Query("skip_total") == "1",
 	}
-	records, total, err := h.store.ListAccessRecords(filter)
+	if b := c.Query("blocked"); b == "1" || b == "true" {
+		v := true
+		filter.Blocked = &v
+	} else if b == "0" || b == "false" {
+		v := false
+		filter.Blocked = &v
+	}
+
+	tList := time.Now()
+	ips, total, err := h.store.ListIPStats(filter)
+	listMs := time.Since(tList).Milliseconds()
+	totalMs := time.Since(t0).Milliseconds()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"records": records, "total": total})
+	log.Printf("[perf] GET /api/ips list=%dms total=%dms skip_total=%v rows=%d", listMs, totalMs, filter.SkipTotal, len(ips))
+	c.JSON(http.StatusOK, gin.H{
+		"ips":   ips,
+		"total": total,
+		"_ms":   gin.H{"list": listMs, "total": totalMs},
+	})
+}
+
+func (h *Handler) getIP(c *gin.Context) {
+	ip := c.Param("ip")
+	row, err := h.store.GetIPStat(ip)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "ip not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ip": row})
 }
 
 func (h *Handler) stats(c *gin.Context) {
-	total, err := h.store.RecordCount()
+	t0 := time.Now()
+	tSummary := time.Now()
+	totalIPs, blockedIPs, totalVisits, err := h.store.IPStatsSummary()
+	summaryMs := time.Since(tSummary).Milliseconds()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	top, err := h.store.TopIPs(20)
+	totalMs := time.Since(t0).Milliseconds()
+	log.Printf("[perf] GET /api/stats summary=%dms total=%dms ips=%d", summaryMs, totalMs, totalIPs)
+	c.JSON(http.StatusOK, gin.H{
+		"total_ips":      totalIPs,
+		"blocked_ips":    blockedIPs,
+		"total_visits":   totalVisits,
+		"firewall_ready": h.firewall.Available(),
+		"geoip_ready":    h.geo.Available(),
+		"scanner":        h.scannerStatus(),
+		"_ms":            gin.H{"summary": summaryMs, "total": totalMs},
+	})
+}
+
+func (h *Handler) scannerStatus() gin.H {
+	if h.scanner == nil {
+		return gin.H{"scanning": false}
+	}
+	st := h.scanner.Status()
+	out := gin.H{
+		"scanning":     st.Scanning,
+		"current_path": st.CurrentPath,
+		"file_index":   st.FileIndex,
+		"file_count":   st.FileCount,
+		"bytes_read":   st.BytesRead,
+		"bytes_total":  st.BytesTotal,
+		"progress":     st.Progress(),
+	}
+	if !st.StartedAt.IsZero() {
+		out["started_at"] = st.StartedAt
+	}
+	return out
+}
+
+type firewallReq struct {
+	IP string `json:"ip"`
+}
+
+func (h *Handler) blockIP(c *gin.Context) {
+	var req firewallReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ip required"})
+		return
+	}
+	if h.firewall.Available() {
+		if err := h.firewall.Block(req.IP); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := h.store.SetIPBlocked(req.IP, true); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "blocked": true, "iptables": h.firewall.Available()})
+}
+
+func (h *Handler) unblockIP(c *gin.Context) {
+	var req firewallReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ip required"})
+		return
+	}
+	if h.firewall.Available() {
+		if err := h.firewall.Unblock(req.IP); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := h.store.SetIPBlocked(req.IP, false); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "blocked": false})
+}
+
+func (h *Handler) listIptablesRules(c *gin.Context) {
+	if !h.firewall.Available() {
+		c.JSON(http.StatusOK, gin.H{"available": false, "ips": []string{}})
+		return
+	}
+	ips, err := h.firewall.ListRules()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"total_records": total, "top_ips": top})
+	if ips == nil {
+		ips = []string{}
+	}
+	c.JSON(http.StatusOK, gin.H{"available": true, "ips": ips})
+}
+
+func (h *Handler) iptablesBlock(c *gin.Context) {
+	var req firewallReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ip required"})
+		return
+	}
+	if !h.firewall.Available() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "iptables not available"})
+		return
+	}
+	if err := h.firewall.Block(req.IP); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.syncDBBlocked(req.IP, true)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *Handler) iptablesUnblock(c *gin.Context) {
+	var req firewallReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.IP == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ip required"})
+		return
+	}
+	if !h.firewall.Available() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "iptables not available"})
+		return
+	}
+	if err := h.firewall.Unblock(req.IP); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.syncDBBlocked(req.IP, false)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *Handler) syncDBBlocked(ip string, blocked bool) {
+	if _, err := h.store.GetIPStat(ip); err != nil {
+		return
+	}
+	_ = h.store.SetIPBlocked(ip, blocked)
 }
 
 func (h *Handler) getSettings(c *gin.Context) {
@@ -132,6 +306,16 @@ func (h *Handler) getSettings(c *gin.Context) {
 		},
 		"scanner": gin.H{
 			"interval_seconds": h.cfg.Scanner.IntervalSeconds,
+		},
+		"firewall": gin.H{
+			"enabled": h.cfg.Firewall.Enabled,
+			"chain":   h.cfg.Firewall.Chain,
+			"ready":   h.firewall.Available(),
+		},
+		"geoip": gin.H{
+			"enabled": h.cfg.GeoIP.Enabled,
+			"db_path": h.cfg.GeoIP.DBPath,
+			"ready":   h.geo.Available(),
 		},
 		"monitored_logs": logs,
 	})
